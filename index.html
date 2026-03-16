@@ -365,6 +365,12 @@
     <div id="speed-bar-wrap">
       <span class="hud-label">SPEED</span>
       <div id="speed-bar"><div id="speed-fill"></div></div>
+      <button id="mute-btn" onclick="toggleMute()" title="Toggle Sound" style="
+        background:transparent;border:1px solid rgba(255,255,255,0.2);
+        border-radius:4px;color:rgba(255,255,255,0.5);font-size:0.8rem;
+        padding:2px 6px;cursor:pointer;margin-top:4px;line-height:1;
+        font-family:monospace;transition:all 0.2s;
+      ">🔊</button>
     </div>
   </div>
 
@@ -474,7 +480,8 @@ const player = {
       this.vy = this.jumpForce;
       this.onGround = false;
       this.jumpCount++;
-      playSound('jump');
+      // First jump vs double jump have different sounds
+      playSound(this.jumpCount === 1 ? 'jump' : 'jump2');
     }
   },
 
@@ -490,9 +497,11 @@ const player = {
 
     // Ground collision
     if (this.y >= GROUND_Y - this.h) {
+      const wasAirborne = !this.onGround;
       this.y = GROUND_Y - this.h;
       this.vy = 0;
       this.onGround = true;
+      if (wasAirborne) playSound('land');
       this.jumpCount = 0;
     }
   },
@@ -860,53 +869,321 @@ function drawParticles() {
   });
 }
 
-// ===== SOUND (Web Audio API) =====
+// ===== SOUND ENGINE (Web Audio API) =====
 let audioCtx = null;
+let masterGain = null;
+let bgmPlaying = false;
+let bgmNodes = {}; // holds refs for stopping BGM
 
 function getAudio() {
   if (!audioCtx) {
-    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {}
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      masterGain = audioCtx.createGain();
+      masterGain.gain.value = 0.7;
+      masterGain.connect(audioCtx.destination);
+    } catch(e) {}
   }
   return audioCtx;
 }
 
+// ---- SFX ----
 function playSound(type) {
   const ac = getAudio();
   if (!ac) return;
   try {
-    const osc = ac.createOscillator();
-    const gain = ac.createGain();
-    osc.connect(gain);
-    gain.connect(ac.destination);
+    const t = ac.currentTime;
 
     if (type === 'jump') {
-      osc.frequency.setValueAtTime(300, ac.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(600, ac.currentTime + 0.1);
-      gain.gain.setValueAtTime(0.15, ac.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.2);
-      osc.start(ac.currentTime);
-      osc.stop(ac.currentTime + 0.2);
+      // Punchy synth hop: quick pitch sweep + click attack
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.connect(gain); gain.connect(masterGain);
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(180, t);
+      osc.frequency.exponentialRampToValueAtTime(520, t + 0.06);
+      osc.frequency.exponentialRampToValueAtTime(380, t + 0.14);
+      gain.gain.setValueAtTime(0.22, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+      osc.start(t); osc.stop(t + 0.18);
+
+      // Sub thump for weight
+      const sub = ac.createOscillator();
+      const subG = ac.createGain();
+      sub.connect(subG); subG.connect(masterGain);
+      sub.type = 'sine';
+      sub.frequency.setValueAtTime(90, t);
+      sub.frequency.exponentialRampToValueAtTime(40, t + 0.1);
+      subG.gain.setValueAtTime(0.18, t);
+      subG.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+      sub.start(t); sub.stop(t + 0.12);
+
+    } else if (type === 'jump2') {
+      // Double-jump: higher pitched version
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.connect(gain); gain.connect(masterGain);
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(380, t);
+      osc.frequency.exponentialRampToValueAtTime(900, t + 0.07);
+      osc.frequency.exponentialRampToValueAtTime(640, t + 0.15);
+      gain.gain.setValueAtTime(0.18, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+      osc.start(t); osc.stop(t + 0.18);
+
+      // Shimmer
+      const sh = ac.createOscillator();
+      const shG = ac.createGain();
+      sh.connect(shG); shG.connect(masterGain);
+      sh.type = 'sine';
+      sh.frequency.setValueAtTime(1200, t);
+      sh.frequency.exponentialRampToValueAtTime(2000, t + 0.08);
+      shG.gain.setValueAtTime(0.08, t);
+      shG.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+      sh.start(t); sh.stop(t + 0.1);
+
+    } else if (type === 'land') {
+      // Landing thud
+      const buf = ac.createBuffer(1, ac.sampleRate * 0.08, ac.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / data.length, 3);
+      const src = ac.createBufferSource();
+      const filt = ac.createBiquadFilter();
+      const gain = ac.createGain();
+      filt.type = 'lowpass'; filt.frequency.value = 180;
+      src.buffer = buf;
+      src.connect(filt); filt.connect(gain); gain.connect(masterGain);
+      gain.gain.setValueAtTime(0.4, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+      src.start(t);
+
     } else if (type === 'gameover') {
-      osc.frequency.setValueAtTime(440, ac.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(110, ac.currentTime + 0.5);
-      osc.type = 'sawtooth';
-      gain.gain.setValueAtTime(0.2, ac.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.6);
-      osc.start(ac.currentTime);
-      osc.stop(ac.currentTime + 0.6);
-    } else if (type === 'levelup') {
-      [0, 0.1, 0.2].forEach((t, i) => {
-        const o2 = ac.createOscillator();
-        const g2 = ac.createGain();
-        o2.connect(g2); g2.connect(ac.destination);
-        o2.frequency.value = [400, 500, 700][i];
-        g2.gain.setValueAtTime(0.1, ac.currentTime + t);
-        g2.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + t + 0.15);
-        o2.start(ac.currentTime + t);
-        o2.stop(ac.currentTime + t + 0.15);
+      // Stop BGM
+      stopBGM();
+      // Dramatic descending crash
+      [0, 0.12, 0.28, 0.48].forEach((dt, i) => {
+        const o = ac.createOscillator();
+        const g = ac.createGain();
+        o.connect(g); g.connect(masterGain);
+        o.type = i % 2 === 0 ? 'sawtooth' : 'square';
+        const baseFreq = [440, 330, 220, 110][i];
+        o.frequency.setValueAtTime(baseFreq, t + dt);
+        o.frequency.exponentialRampToValueAtTime(baseFreq * 0.5, t + dt + 0.2);
+        g.gain.setValueAtTime(0.18, t + dt);
+        g.gain.exponentialRampToValueAtTime(0.001, t + dt + 0.25);
+        o.start(t + dt); o.stop(t + dt + 0.28);
       });
+      // Explosion noise burst
+      const buf = ac.createBuffer(1, ac.sampleRate * 0.3, ac.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / data.length, 1.5);
+      const src = ac.createBufferSource();
+      const filt = ac.createBiquadFilter();
+      const ng = ac.createGain();
+      filt.type = 'lowpass'; filt.frequency.value = 600;
+      src.buffer = buf;
+      src.connect(filt); filt.connect(ng); ng.connect(masterGain);
+      ng.gain.setValueAtTime(0.35, t);
+      ng.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+      src.start(t);
+
+    } else if (type === 'levelup') {
+      // Triumphant arpeggio sweep
+      const notes = [523, 659, 784, 1047]; // C5 E5 G5 C6
+      notes.forEach((freq, i) => {
+        const o = ac.createOscillator();
+        const g = ac.createGain();
+        o.connect(g); g.connect(masterGain);
+        o.type = 'square';
+        o.frequency.value = freq;
+        const dt = i * 0.08;
+        g.gain.setValueAtTime(0, t + dt);
+        g.gain.linearRampToValueAtTime(0.12, t + dt + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.001, t + dt + 0.18);
+        o.start(t + dt); o.stop(t + dt + 0.2);
+      });
+      // Sparkle high overtone
+      const sp = ac.createOscillator();
+      const spG = ac.createGain();
+      sp.connect(spG); spG.connect(masterGain);
+      sp.type = 'sine';
+      sp.frequency.setValueAtTime(2093, t + 0.3);
+      sp.frequency.exponentialRampToValueAtTime(4186, t + 0.5);
+      spG.gain.setValueAtTime(0.07, t + 0.3);
+      spG.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+      sp.start(t + 0.3); sp.stop(t + 0.5);
+
+    } else if (type === 'milestone') {
+      // Score milestone ping
+      const o = ac.createOscillator();
+      const g = ac.createGain();
+      o.connect(g); g.connect(masterGain);
+      o.type = 'sine';
+      o.frequency.setValueAtTime(880, t);
+      o.frequency.exponentialRampToValueAtTime(1320, t + 0.05);
+      g.gain.setValueAtTime(0.1, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+      o.start(t); o.stop(t + 0.15);
     }
   } catch(e) {}
+}
+
+// ---- BACKGROUND MUSIC ----
+// Procedural chiptune-style BGM using oscillators + sequencer
+let bgmInterval = null;
+let bgmStep = 0;
+let bgmOscNodes = [];
+
+// Bass line pattern (note frequencies, 0 = rest)
+const BGM_BASS = [
+  110, 0, 110, 0, 130, 0, 110, 0,
+  98,  0, 98,  0, 110, 0, 0,   0,
+  110, 0, 110, 0, 147, 0, 147, 0,
+  130, 0, 130, 0, 110, 0, 0,   0,
+];
+
+// Melody pattern
+const BGM_MELODY = [
+  0,   440, 0,   494, 0,   440, 0,   392,
+  0,   349, 0,   392, 0,   440, 0,   0,
+  0,   440, 0,   523, 0,   587, 0,   523,
+  0,   494, 0,   440, 0,   0,   392, 0,
+];
+
+// Chord stabs
+const BGM_CHORDS = [
+  [110,138,165], null, null, null, [116,146,174], null, null, null,
+  [98, 123,147], null, null, null, [104,131,156], null, null, null,
+  [110,138,165], null, null, null, [147,185,220], null, null, null,
+  [130,164,196], null, null, null, [110,138,165], null, null, null,
+];
+
+function startBGM() {
+  const ac = getAudio();
+  if (!ac || bgmPlaying) return;
+  bgmPlaying = true;
+  bgmStep = 0;
+
+  const BPM = 145;
+  const stepMs = (60 / BPM / 2) * 1000; // 16th notes
+
+  bgmInterval = setInterval(() => {
+    if (!bgmPlaying) return;
+    const t = ac.currentTime;
+    const step = bgmStep % BGM_BASS.length;
+
+    // --- BASS ---
+    const bassFreq = BGM_BASS[step];
+    if (bassFreq) {
+      const o = ac.createOscillator();
+      const g = ac.createGain();
+      const filt = ac.createBiquadFilter();
+      o.type = 'sawtooth';
+      o.frequency.value = bassFreq;
+      filt.type = 'lowpass';
+      filt.frequency.value = 400;
+      o.connect(filt); filt.connect(g); g.connect(masterGain);
+      g.gain.setValueAtTime(0.18, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + stepMs / 1000 * 0.8);
+      o.start(t); o.stop(t + stepMs / 1000);
+    }
+
+    // --- MELODY ---
+    const melFreq = BGM_MELODY[step];
+    if (melFreq) {
+      const o = ac.createOscillator();
+      const g = ac.createGain();
+      o.type = 'square';
+      o.frequency.value = melFreq;
+      o.connect(g); g.connect(masterGain);
+      g.gain.setValueAtTime(0.07, t);
+      g.gain.setValueAtTime(0.07, t + stepMs / 1000 * 0.6);
+      g.gain.exponentialRampToValueAtTime(0.001, t + stepMs / 1000 * 0.9);
+      o.start(t); o.stop(t + stepMs / 1000);
+    }
+
+    // --- CHORDS ---
+    const chord = BGM_CHORDS[step];
+    if (chord) {
+      chord.forEach(freq => {
+        const o = ac.createOscillator();
+        const g = ac.createGain();
+        o.type = 'triangle';
+        o.frequency.value = freq;
+        o.connect(g); g.connect(masterGain);
+        g.gain.setValueAtTime(0.04, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + stepMs / 1000 * 3);
+        o.start(t); o.stop(t + stepMs / 1000 * 3);
+      });
+    }
+
+    // --- HI-HAT (noise) on every 2 steps ---
+    if (step % 2 === 0) {
+      try {
+        const buf = ac.createBuffer(1, Math.floor(ac.sampleRate * 0.03), ac.sampleRate);
+        const d = buf.getChannelData(0);
+        for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+        const src = ac.createBufferSource();
+        const filt = ac.createBiquadFilter();
+        const g = ac.createGain();
+        filt.type = 'highpass'; filt.frequency.value = 6000;
+        src.buffer = buf;
+        src.connect(filt); filt.connect(g); g.connect(masterGain);
+        g.gain.setValueAtTime(step % 8 === 0 ? 0.06 : 0.03, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.03);
+        src.start(t);
+      } catch(e) {}
+    }
+
+    // --- KICK on beat (every 8 steps) ---
+    if (step % 8 === 0) {
+      const o = ac.createOscillator();
+      const g = ac.createGain();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(160, t);
+      o.frequency.exponentialRampToValueAtTime(40, t + 0.08);
+      o.connect(g); g.connect(masterGain);
+      g.gain.setValueAtTime(0.3, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+      o.start(t); o.stop(t + 0.12);
+    }
+
+    // --- SNARE on beat 3 (step 16) ---
+    if (step % 16 === 8) {
+      try {
+        const buf = ac.createBuffer(1, Math.floor(ac.sampleRate * 0.1), ac.sampleRate);
+        const d = buf.getChannelData(0);
+        for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 2);
+        const src = ac.createBufferSource();
+        const filt = ac.createBiquadFilter();
+        const g = ac.createGain();
+        filt.type = 'bandpass'; filt.frequency.value = 1200; filt.Q.value = 0.5;
+        src.buffer = buf;
+        src.connect(filt); filt.connect(g); g.connect(masterGain);
+        g.gain.setValueAtTime(0.15, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+        src.start(t);
+      } catch(e) {}
+    }
+
+    bgmStep++;
+  }, stepMs);
+}
+
+function stopBGM() {
+  bgmPlaying = false;
+  if (bgmInterval) { clearInterval(bgmInterval); bgmInterval = null; }
+}
+
+// ---- MUTE ----
+let muted = false;
+function toggleMute() {
+  muted = !muted;
+  const ac = getAudio();
+  if (ac && masterGain) {
+    masterGain.gain.setTargetAtTime(muted ? 0 : 0.7, ac.currentTime, 0.05);
+  }
+  document.getElementById('mute-btn').textContent = muted ? '🔇' : '🔊';
 }
 
 // ===== SPEED & LEVEL SYSTEM =====
@@ -946,6 +1223,8 @@ function showToast(msg) {
 function updateScore() {
   score++;
   document.getElementById('score-display').textContent = score;
+  // Milestone ping every 100 points
+  if (score % 100 === 0) playSound('milestone');
   if (score > highScore) {
     highScore = score;
     localStorage.setItem('pixelDashBest', highScore);
@@ -1020,6 +1299,8 @@ function startGame() {
   if (audioCtx && audioCtx.state === 'suspended') {
     audioCtx.resume();
   }
+  // Start background music
+  startBGM();
 }
 
 // ===== MAIN LOOP =====
